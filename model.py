@@ -5,18 +5,69 @@ from sklearn.preprocessing import OneHotEncoder
 
 
 class NeuralNetwork:
+  '''
+  This class implements the full training/evaluation pipeline:
+  weight initialization (with explicit bias terms), forward propagation,
+  cross-entropy loss, backpropagation with L2 weight decay (bias excluded),
+  per-epoch metric logging, and (optional) custom stratified K-fold Cross Validation.
+
+  Attributes
+  ----------
+  layers : list[int]
+      Layer sizes
+  alpha : float
+      Learning rate used for gradient descent.
+  regularizer : float
+      L2 penalty coefficient λ (bias weights are not penalized).
+  epochs : int
+      Number of passes over the training data.
+  k_folds : int
+      Number of folds for stratified cross-validation.
+  data : pandas.DataFrame
+      Preprocessed dataset where the last layers[-1] columns are one-hot labels.
+  X : pandas.DataFrame
+      Feature matrix extracted from data.
+  Y : pandas.DataFrame
+      One-hot label matrix extracted from data.
+  weights : list[np.ndarray]
+      One weight matrix per layer (including a bias column in each).
+      Shape of W^i is (n_{i+1}, n_{i} + 1). Where W^i is the weight matrix for layer i (connecting layer i -> layer i + 1)
+  training_losses, test_losses : list[float]
+      Regularized losses per epoch.
+  test_accuracies, test_precisions, test_recalls, test_f1s : list[float]
+      Evaluation metrics (when a test set is provided) per epoch.
+  final_confusion_matrix : np.ndarray
+      Confusion matrix computed on the latest evaluation pass.
+  '''
 
   def __init__(self, layers, alpha, regularizer, epochs, k_folds, data):
-    """Initialize a neural network.
 
-    Parameters:
-    - layers: list of ints representing number of neurons in each layer.
-    - alpha: learning rate.
-    - regularizer: L2 regularization parameter.
-    - epochs: number of training epochs.
-    - k_folds: number of folds for cross-validation.
-    - data: pandas DataFrame with training features and one-hot encoded labels.
     """
+    Initializes the network configuration and training state.
+
+    Parameters
+    ----------
+    layers : list[int]
+        Layer sizes from input to output (e.g., [48, 12, 4, 2]).
+        First value must equal the number of input features.
+        The last value must equal the number of one-hot label columns in data.
+    alpha : float
+        Learning rate for weight updates.
+    regularizer : float
+        L2 penalty coefficient λ (bias weights are not penalized).
+    epochs : int
+        Number of training epochs to run.
+    k_folds : int
+        Number of folds for the custom stratified cross-validation routine.
+    data : pandas.DataFrame
+        Preprocessed dataset where the last layers[-1] columns are one-hot encoded labels.
+
+    Notes
+    -----
+    - Splits data into features (self.X) and labels (self.Y).
+    - Initializes network weights via initialize_weights().
+    """
+    
 
     self.layers = layers
     self.alpha = alpha
@@ -42,10 +93,12 @@ class NeuralNetwork:
 
 
   def initialize_weights(self):
-    """Randomly initialize weights for all layers, including bias weights.
-
-    Returns:
-    - List of numpy arrays, one for each layer's weights.
+    """
+    Populates self.weights as a list[np.ndarray] with one matrix per layer. 
+    
+    Each weight matrix includes an extra first column for the bias term.
+    For a pair of consecutive layers (n_in -> n_out), the shape is
+    (n_out, n_in + 1). Weights are drawn from a standard normal distribution.
     """
 
     for layer in range(self.n_layers-2):
@@ -62,15 +115,29 @@ class NeuralNetwork:
 
 
   def forward(self, X):
-    """Performs forward propagation.
+    """
+    Performs forward propagation of a single training or test instance through all layers using sigmoid activations.
 
-    Parameters:
-    - X: input feature vector.
+    Parameters
+    ----------
+    X : np.ndarray | pandas.DataFrame
+        Feature vector of shape (n_features, 1).
 
-    Returns:
-    - Z: list of pre-activation values.
-    - A: list of activations.
-    - last_activation: final output vector.
+    Returns
+    -------
+    Z_list : list[np.ndarray]
+        Linear pre-activations per layer (including bias concatenation step in A), for debugging.
+    A_list : list[np.ndarray]
+        Activations per layer (with leading 1.0 inserted to carry the bias).
+    output : np.ndarray
+        The final layer activation (sigmoid probabilities) of shape (n_outputs, 1).
+        Last entry of A_list.
+        Argmaxing this would give the class prediction.
+
+    Notes
+    -----
+    - Bias handling: a 1 is prepended to each layer’s activation
+      so the bias weights are multiplied automatically on the next layer’s dot product.
     """
 
     x = X.copy()
@@ -100,27 +167,101 @@ class NeuralNetwork:
 
 
   def calculate_loss(self, outputs, y):
-    """Computes binary cross-entropy loss."""
+    """
+    Computes (unregularized) cross-entropy loss.
 
-    loss = -1 * np.multiply(y, np.log(outputs)) - np.multiply((1 - y), np.log(1 - outputs)) #this might run into problems when y is multiple classes
+    Parameters
+    ----------
+    outputs : np.ndarray
+        Sigmoid probabilities from the final layer calculated from forward(); shape: (n_outputs, 1).
+    y : np.ndarray
+        One-hot-encoded true labels; shape: (n_outputs, 1).
+
+    Returns
+    -------
+    float
+        Sum of element-wise cross-entropy over the output list for a single instance.
+    """
+
+    loss = -1 * np.multiply(y, np.log(outputs)) - np.multiply((1 - y), np.log(1 - outputs))
     return np.sum(loss)
+  
+
+  def regularize_loss(self, weight_list, loss, n_training_instances, regularizer):
+    """
+    Add L2 penalty to the loss (bias excluded).
+
+    Parameters
+    ----------
+    weight_list : list[np.ndarray]
+        Current weight matrices for all layers (self.weights, each includes a bias column).
+    loss : float
+        Unregularized loss value (sum, self.J, of per-sample cross entropies calculated from calculate_loss()).
+    n_training_instances : int
+        Sample size (m).
+    regularizer : float
+        L2 coefficient λ.
+
+    Returns
+    -------
+    float
+        Regularized loss: loss / m + (λ / (2m)) * Σ ||W_no_bias||^2
+
+    Notes
+    -----
+    - Bias weights (first column) are excluded from the penalty.
+    """
+
+    weights_copy = weight_list.copy()
+
+    S = 0
+
+    for weight_matrix in weights_copy:
+
+      weight_matrix[:,0] = 0      #first column of every weight matrix is bias, so set it to 0
+      S += np.sum(np.square(weight_matrix)) #sum of squared weights
+
+    regularized_loss = loss / n_training_instances + regularizer / (2 * n_training_instances) * S
+    return regularized_loss
 
 
   def back_prop(self, X, Y):
-    """Performs backpropagation and update weights.
+    """
+    Perform backpropagation and update the network’s weights using stochastic gradient descent.
 
-    Parameters:
-    - X: input features.
-    - Y: true labels.
+    This method computes layer wise errors via the chain rule, calculates both raw and
+    regularized gradients, and applies a weight update step for each layer.
 
-    Returns:
-    - error: list of error vectors.
-    - D: list of unregularized gradient matrices.
-    - regularized_gradients: list of regularized gradient matrices.
+    Parameters
+    ----------
+    X : np.ndarray | pandas.DataFrame
+        Input feature vector of shape: (n_features, 1).
+    Y : np.ndarray | pandas.DataFrame
+        One-hot-encoded labels of shape: (n_outputs, 1).
+
+    Returns (For debugging or future use)
+    -------
+    error : list[np.ndarray]
+        Backpropagated error terms (δ) for each layer.
+        Each element corresponds to the layer’s partial derivative of loss w.r.t. z.
+    D : list[np.ndarray]
+        Unregularized gradient matrices (∂J/∂W) for each layer.
+    regularized_gradients : list[np.ndarray]
+        Gradients including L2 regularization (D + λW), where the bias column is excluded of each layer.
+
+    Notes
+    -----
+    - Performs a full forward pass to obtain activations and predictions using forward().
+    - Uses the sigmoid activation derivative (A * (1 - A)) for hidden layers.
+    - Bias terms are excluded from regularization by zeroing their corresponding weights.
+    - Weight update rule:
+          W := W - α * (D + λW)   where α is the learning rate (self.alpha).
+    - The cumulative training loss is stored in self.J.
+    - This function effectively trains the network one training instance at a time.
     """
 
-    x = X.copy()#.to_numpy()
-    y = Y.copy()#.to_numpy()
+    x = X.copy()
+    y = Y.copy()
 
     error = []
     D = []
@@ -146,7 +287,7 @@ class NeuralNetwork:
 
       D.append(gradient_matrix)
 
-      P = np.add(gradient_matrix, regularized_weights) #P is the regularized gradient matrix, #adds D + P(regularized weights)
+      P = np.add(gradient_matrix, regularized_weights) #adds D + P(regularized weights), where P is the regularized gradient matrix
       regularized_gradients.append(P)
 
       self.weights[layer] = np.subtract(self.weights[layer], self.alpha * P) #gradient descent on the weights
@@ -154,23 +295,11 @@ class NeuralNetwork:
     return error[:-1], D, regularized_gradients
 
 
-
-  def regularize_loss(self, weight_list, loss, n_training_instances, regularizer):
-
-    weights_copy = weight_list.copy()
-
-    S = 0
-
-    for weight_matrix in weights_copy:
-
-      weight_matrix[:,0] = 0      #first column of every weight matrix is bias, so set it to 0
-      S = np.sum(np.square(weight_matrix)) #sum of squared weights
-
-    regularized_loss = loss / n_training_instances + regularizer / (2 * n_training_instances) * S
-    return regularized_loss
-
-
   def fit(self, test_size = 0.3, shuffle = True):
+    """
+    This is a simple wrapper around sklearn.model_selection.train_test_split, returning
+    DataFrames ready for training.
+    """
 
     X = self.X
     Y = self.Y
@@ -180,15 +309,44 @@ class NeuralNetwork:
     return train_x, train_y, test_x, test_y
 
 
-  def SGD(self, train_x, train_y, test_x = None, test_y = None):
+  def train(self, train_x, train_y, test_x = None, test_y = None):
+    """
+    Trains the neural network using stochastic gradient descent.
 
-    self.training_losses = []
-    self.test_losses = []
-    self.test_accuracies = []
-    self.test_precisions = []
-    self.test_recalls = []
-    self.test_f1s = []
-    self.confusion_matrix = np.zeros((self.layers[-1], self.layers[-1]))
+    This method iterates over the training data for a fixed number of epochs (self.epochs),
+    performing forward and backward propagation on each instance, updating weights
+    using L2-regularized gradients. After each epoch, it logs the training loss
+    and computes and records test set performance metrics.
+
+    Parameters
+    ----------
+    train_x : pandas.DataFrame
+        Training feature matrix of shape (training_set_size, n_features). Where m is the size of the training set
+    train_y : pandas.DataFrame
+        One-hot encoded training labels of shape (training_set_size, n_outputs).
+    test_x : pandas.DataFrame, optional
+        Test feature matrix for evaluation of shape (test_set_size, n_features).
+    test_y : pandas.DataFrame, optional
+        One-hot-encoded test labels for evaluation of shape (test_set_size, n_outputs).
+
+    Returns
+    -------
+    final_metrics : tuple[float, float, float, float, float]
+        The final test metrics after the last epoch in the form:
+        (accuracy, precision, recall, F1 score, test loss).
+
+    Notes
+    -----
+    - Performs a full training loop:
+        1. Resets cumulative loss self.J each epoch.
+        2. Performs back_prop() for every training instance.
+        3. Computes the regularized epoch loss and appends it to self.training_losses.
+        4. Evaluates the model via evaluate_on_test_set() function
+           to log loss, accuracy, precision, recall, and F1 score per epoch.
+    - The final epoch’s confusion matrix is saved in self.final_confusion_matrix.
+    - Weight updates use the learning rate self.alpha and regularization self.regularizer using stochastic gradient descent.
+    - Metrics arrays can later be visualized using utils.plot_training_metrics().
+    """
 
     x_train_np = train_x.to_numpy()
     y_train_np = train_y.to_numpy()
@@ -223,6 +381,21 @@ class NeuralNetwork:
 
 
   def predict(self, test_instance):
+    """
+    Run a single forward pass and return both probabilities and a one-hot-encoded class prediction.
+
+    Parameters
+    ----------
+    test_instance : np.ndarray
+        A single input feature vector of length n_features.
+
+    Returns
+    -------
+    output : np.ndarray
+        The network's output probabilities for each class of shape: (n_outputs, 1).
+    prediction : np.ndarray
+        One-hot-encoded class vector of shape (n_outputs, 1) with 1 at argmax(output) and 0 elsewhere.
+    """
 
     _, _, output = self.forward(test_instance)
 
@@ -233,6 +406,30 @@ class NeuralNetwork:
 
 
   def confusion_matrix_metrics(self, cm): #calculates precision, recall, F1 score from the confusion matrix
+    """
+    Compute macro-averaged precision, recall, and F1 from a confusion matrix.
+
+    Parameters
+    ----------
+    cm : list[np.ndarray]
+        Confusion matrix of shape (n_classes, n_classes), where rows correspond to
+        actual classes and columns to predicted classes.
+
+    Returns
+    -------
+    precision : float
+        Macro-averaged precision across classes.
+    recall : float
+        Macro-averaged recall across classes.
+    f1 : float
+        Macro-averaged F1 score across classes.
+
+    Notes
+    -----
+    - Uses a small epsilon to avoid division by zero.
+    - Per-class metrics: True Positives (TP), True Negatives (TN), False Positives (FP), and False Negatives (FN)
+      are computed and used to calculate precision, recall, f1.
+    """
 
     num_classes = cm.shape[0]
     eps = 1e-8  #small value to avoid division by zero
@@ -258,6 +455,38 @@ class NeuralNetwork:
 
 
   def evaluate_on_test_set(self, test_x, test_y):
+    """
+    Helper fnction to evaluate loss and classification metrics on a test set after weights have been trained.
+
+    Parameters
+    ----------
+    test_x : pandas.DataFrame
+        Test features of shape (test_set_size, n_features).
+    test_y : pandas.DataFrame
+        One-hot-encoded test labels of shape (test_set_size, n_outputs).
+
+    Returns
+    -------
+    test_loss : float
+        Sum of (unregularized) cross-entropy losses over the test set.
+    accuracy : float
+        Overall accuracy = correct / test_set_size.
+    precision : float
+        Macro-averaged precision from the confusion matrix.
+    recall : float
+        Macro-averaged recall from the confusion matrix.
+    f1 : float
+        Macro-averaged F1 from the confusion matrix.
+    confusion_matrix : list[np.ndarray]
+        Integer confusion matrix aggregated over the test set with shape: (n_outputs, n_outputs).
+        Used for visualizations later.
+
+    Notes
+    -----
+    - Iterates through the test set and calls predict(), accumulates loss with
+      calculate_loss(), and fills the confusion matrix.
+    - Calls confusion_matrix_metrics() to get the recall, precision, and f1
+    """
 
     test_x_np = test_x.to_numpy()
     test_y_np = test_y.to_numpy()
@@ -286,6 +515,24 @@ class NeuralNetwork:
 
 
   def stratify_data(self, k):
+    """
+    Create k stratified folds that preserve class proportions.
+
+    Parameters
+    ----------
+    k : int
+        Number of folds to create.
+
+    Returns
+    -------
+    folds : list[pandas.DataFrame]
+        List of k dataframes, each containing features and a single 'class' column
+        (not one-hot-encoded). Class distribution is approximately preserved in each fold.
+
+    Notes
+    -----
+    - One-hot label columns are reintroduced later by re_hot_encode_class_column().
+    """
 
     df = self.data.copy()
     n = df.shape[0]
@@ -310,19 +557,56 @@ class NeuralNetwork:
     return folds
 
 
-  def re_hot_encode_class_column(self, df):  #not efficient at all but it works
+  def re_hot_encode_class_column(self, df):
+    """
+    Helper function for stratify_data() that replaces a single categorical 'class' column with one-hot-encoded label columns.
 
-    n_outputs = self.layers[-1]
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Fold dataframe containing features + a single 'class' column.
+
+    Returns
+    -------
+    transformed_df : pandas.DataFrame
+        The same dataframe with 'class' removed and replaced by one-hot columns
+        appended at the end (number of columns equals n_outputs).
+
+    Notes
+    -----
+    - Probably not the most efficient method and may be a little clumsy, but it works
+    """
+
     ohe = OneHotEncoder()
 
     transformed_class = ohe.fit_transform(df[['class']]).toarray()
     temp_df = pd.DataFrame(data = transformed_class).reset_index(drop = True)
-    transformed_df = df.drop(columns = ['class']).reset_index(drop = True).join(temp_df, how = 'left', lsuffix='left', rsuffix='right')
+    transformed_df = df.drop(columns = ['class']).reset_index(drop = True).join(temp_df, how = 'left', lsuffix = 'left', rsuffix = 'right')
 
     return transformed_df
 
 
   def stratified_metrics(self):
+    """
+    Run custom stratified K-fold cross-validation and return mean metrics.
+
+    Process
+    -------
+    1) Build k stratified folds via stratify_data(self.k_folds).
+    2) For each fold i:
+       - Use fold i as test; concatenate the remaining folds as train.
+       - Split training and test sets into features and outputs (X, Y).
+       - Train/evaluate with train()) on that split to obtain metrics.
+       - Re-initialize weights after each fold to avoid leakage between folds.
+    3) Average accuracy, precision, recall, and F1 across folds.
+
+    Returns
+    -------
+    accuracy_mean : float
+    precision_mean : float
+    recall_mean : float
+    f1_mean : float
+    """
 
     fold_data = self.stratify_data(self.k_folds)
     n_outputs = self.layers[-1]
@@ -345,7 +629,7 @@ class NeuralNetwork:
 
       #RE INITIALIZE WEIGHTS AFTER EVERY FOLD
 
-      accuracy, precision, recall, F1, _ = self.SGD(train_x=train_x, train_y=train_y, test_x=test_x, test_y=test_y)
+      accuracy, precision, recall, F1, _ = self.train(train_x=train_x, train_y=train_y, test_x=test_x, test_y=test_y)
 
       self.weights = []
       self.initialize_weights()
@@ -356,18 +640,6 @@ class NeuralNetwork:
       F1_list.append(F1)
 
     return np.mean(accuracy_list), np.mean(precision_list), np.mean(recall_list), np.mean(F1_list)
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
