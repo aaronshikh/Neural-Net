@@ -145,7 +145,7 @@ Each dataset section in the notebook includes:
 
 ### House Votes 84
 - **Task:** Binary classification. Predict **party affiliation** (Democrat vs. Republican).  
-- **Description:** Based on the 1984 U.S. Congressional Voting Records dataset. Each sample represents a House member’s votes across 16 key issues, one-hot encoded into **48 binary input features**.  
+- **Description:** Based on the 1984 U.S. Congressional Voting Records dataset. Each sample represents a House member’s votes across 16 key issues, taking the value 1 = yes, 0 = no, 2 = unknown/abstain (did not vote or present). It is one-hot encoded into **48 input features**.  
 - **Goal:** Classify members by political party based on their voting patterns.  
 - **Observations:** Extremely separable dataset, so even shallow networks achieved almost perfect accuracy and F1.  
   - Best configuration: Layers = `[48, 12, 2]`, α = 0.02, λ = 0.001
@@ -167,7 +167,7 @@ Each dataset section in the notebook includes:
 - **Task:** Binary classification. Detect **tumor malignancy** (benign vs. malignant).  
 - **Description:** Simplified version of the original UCI Breast Cancer dataset containing **9 numeric cytological features** describing cell shape, adhesion, and nucleus size.  
 - **Goal:** Classify each tumor sample as malignant or benign.  
-- **Observations:** Small dataset benefited from moderate regularization to prevent overfitting.  
+- **Observations:** Small dataset that benefited from moderate regularization to prevent slight overfitting.  
   - Best configuration: Layers = `[9, 12, 6, 2]`, α = 0.05, λ = 0.01
   - Final Results: F1 = 0.9660, Accuracy = 0.9686.
 
