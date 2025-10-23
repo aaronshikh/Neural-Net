@@ -4,7 +4,6 @@ This project implements a fully connected feedforward neural network from scratc
 
 ---
 
-
 ## Table of Contents
 - [Implementation Details](#implementation-details)
   - [`model.py`](#modelpy)
@@ -13,8 +12,6 @@ This project implements a fully connected feedforward neural network from scratc
 - [Datasets](#datasets)
 - [Evaluation and Results](#evaluation--results)
   - [`results.ipynb`](#resultsipynb)
-- [Limitations & Future Work](#limitations--future-work)
-
 
 
 ## Implementation Details
@@ -187,6 +184,14 @@ Performance was measured using **Accuracy**, **Precision**, **Recall**, and **F1
 1. **Grid Search** – The `evaluate_networks()` function iterates through all layer/α/λ combinations, trains a model, and records metrics in a summary DataFrame.
 2. **Best Model Selection** – The configuration with the highest F1 score is chosen and retrained on the full training set.
 3. **Visualization** – The training and testing progress is visualized using `plot_training_metrics()` (per-epoch metrics) and `plot_learning_curve()` (test loss vs. train size).
+
+### Final Results:
+| Dataset        | Best Architecture    | α (Learning Rate) | λ (Regularization) | F1 Score | Accuracy |
+|----------------|---------------------|-------------------|--------------------|----------|-----------|
+| House Votes 84 | [48, 12, 2]         | 0.02              | 0.001              | 0.9823   | 0.9828    |
+| Wine Recognition | [13, 16, 8, 3]    | 0.05              | 0.001              | 0.9896   | 0.9889    |
+| Breast Cancer  | [9, 12, 6, 2]       | 0.05              | 0.010              | 0.9660   | 0.9686    |
+
 
 
 
